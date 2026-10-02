@@ -4,12 +4,11 @@
 // 桌面端锚定在词的下方（放不下就翻到上方），窄屏变成底部抽屉。
 
 import { motion } from "framer-motion";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { describeLocally } from "@/lib/video-gen/local-engine";
 import { CATEGORIES, controlsFor, subtypeInfo } from "@/lib/video-gen/taxonomy";
 import type { Category, DescribeRequest, DescribeResponse, Entity, ParamValue, Params, RefImage } from "@/lib/video-gen/types";
 import { EntityControls } from "./controls";
-import { entityTint } from "./PromptField";
 import styles from "./video-gen.module.css";
 
 interface Props {
@@ -245,16 +244,13 @@ export default function EntityPopover(props: Props) {
         tabIndex={-1}
         className={styles.popover}
         data-sheet={sheet}
-        style={
-          {
-            // 定位算出来之前先放在屏幕外（不能用 visibility: hidden，那样 focus() 会静默失败）
-            left: place ? place.left : -10000,
-            top: place?.top ?? 0,
-            width: place?.width ?? WIDTH,
-            maxHeight: place?.sheet ? undefined : place?.maxHeight,
-            "--tint": entityTint(entity),
-          } as CSSProperties
-        }
+        style={{
+          // 定位算出来之前先放在屏幕外（不能用 visibility: hidden，那样 focus() 会静默失败）
+          left: place ? place.left : -10000,
+          top: place?.top ?? 0,
+          width: place?.width ?? WIDTH,
+          maxHeight: place?.sheet ? undefined : place?.maxHeight,
+        }}
         initial={sheet ? { opacity: 0, y: 48 } : { opacity: 0, scale: 0.97 }}
         animate={sheet ? { opacity: 1, y: 0 } : { opacity: 1, scale: 1 }}
         exit={sheet ? { opacity: 0, y: 48 } : { opacity: 0, scale: 0.97 }}
@@ -275,7 +271,6 @@ export default function EntityPopover(props: Props) {
           <header className={styles.popHead}>
             <div className={styles.popHeadRow}>
               <span className={styles.typeTag}>
-                <span className={styles.dot} />
                 {info.label}
                 {sub ? ` · ${sub.label}` : ""}
                 <span className={styles.mono}>{info.en}</span>

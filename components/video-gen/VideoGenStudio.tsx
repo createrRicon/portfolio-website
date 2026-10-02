@@ -1,7 +1,8 @@
 "use client";
 
 // 视频生成入口 mockup 的总装：
-//   一片黑 + 光标 → 开始输入 → 系统边读边识别元素（下划线）→ 点词弹窗细化 → 常驻参数 → 生成结构化请求
+//   一片黑 + 光标 → 开始输入 → 系统边读边识别元素（白色下划线）→ 悬停看识别结果、点击弹窗细化
+//   → 常驻视频参数 → ⌘/Ctrl + Enter 生成结构化请求
 
 import Link from "next/link";
 import { AnimatePresence, motion } from "framer-motion";
@@ -10,10 +11,10 @@ import { analyzeLocally } from "@/lib/video-gen/local-engine";
 import { hasUserData, isIntact, mapThroughEdit, mergeDetected, stashKey, type UserData } from "@/lib/video-gen/positions";
 import { defaultParams } from "@/lib/video-gen/taxonomy";
 import type { AnalyzeResponse, Engine, Entity, ParamValue, Params, RefImage, SettingKey, SettingSuggestion, VideoSettings } from "@/lib/video-gen/types";
-import ElementTray from "./ElementTray";
+import EntityHint from "./EntityHint";
 import EntityPopover from "./EntityPopover";
 import PayloadPanel from "./PayloadPanel";
-import PromptField, { type PromptFieldHandle, type Selection } from "./PromptField";
+import PromptField, { type HistoryMode, type PromptFieldHandle, type Selection } from "./PromptField";
 import SettingsBar, { type SettingMeta } from "./SettingsBar";
 import styles from "./video-gen.module.css";
 
@@ -26,13 +27,18 @@ const EXAMPLES = [
 ];
 
 const DEFAULT_SETTINGS: VideoSettings = { aspect: "16:9", resolution: "1080p", fps: 24, duration: 5 };
-const DEFAULT_GLOW = ["#2f4fd8", "#5b2a86", "#12707a"];
 
 /** 停顿多久开始识别；持续输入时最多等多久也要识别一次（边打边出下划线） */
 const DEBOUNCE_MS = 450;
 const MAX_WAIT_MS = 1000;
 /** 「理解中」状态至少显示这么久，避免闪烁 */
 const MIN_PENDING_MS = 280;
+const GENERATE_MS = 1400;
+
+/** 撤销历史：连续打字在这个间隔内合并成一步，但一步最长不超过 COALESCE_SPAN_MS */
+const HISTORY_LIMIT = 200;
+const COALESCE_MS = 800;
+const COALESCE_SPAN_MS = 2500;
 
 interface AnalysisState {
   status: "idle" | "pending" | "done";
@@ -45,6 +51,14 @@ interface AnalysisState {
 interface VideoState {
   settings: VideoSettings;
   meta: SettingMeta;
+}
+
+interface History {
+  entries: Array<{ value: string; selection: Selection }>;
+  index: number;
+  /** 当前这一步最后一次合并的时间、这一步开始的时间；0 表示下一次输入另起一步 */
+  lastAt: number;
+  startedAt: number;
 }
 
 /** 把提示词里读出来的设置建议应用到常驻参数上；用户手动改过的项不动 */
@@ -107,13 +121,12 @@ function buildPayload(text: string, entities: Entity[], settings: VideoSettings,
 }
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+const sameSelection = (a: Selection, b: Selection) => a.start === b.start && a.end === b.end;
 
 export default function VideoGenStudio() {
   const [text, setText] = useState("");
   const [entities, setEntities] = useState<Entity[]>([]);
   const [selection, setSelection] = useState<Selection>({ start: 0, end: 0 });
-  const [focused, setFocused] = useState(false);
-  const [composing, setComposing] = useState(false);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [open, setOpen] = useState<{ id: string; fragment: number } | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisState>({ status: "idle" });
@@ -140,6 +153,7 @@ export default function VideoGenStudio() {
   const ignoredRef = useRef(new Set<string>());
   const stashRef = useRef(new Map<string, UserData>());
   const typingRef = useRef<number | null>(null);
+  const historyRef = useRef<History>({ entries: [{ value: "", selection: { start: 0, end: 0 } }], index: 0, lastAt: 0, startedAt: 0 });
 
   useLayoutEffect(() => {
     entitiesRef.current = entities;
@@ -207,14 +221,38 @@ export default function VideoGenStudio() {
     abortRef.current?.abort();
   }, []);
 
+  /* --------------------------------- 历史 --------------------------------- */
+
+  const record = useCallback((value: string, sel: Selection, mode: HistoryMode) => {
+    const h = historyRef.current;
+    const now = Date.now();
+    h.entries.length = h.index + 1;
+    const merge = mode === "coalesce" && h.index > 0 && now - h.lastAt < COALESCE_MS && now - h.startedAt < COALESCE_SPAN_MS;
+    if (merge) {
+      h.entries[h.index] = { value, selection: sel };
+    } else {
+      h.entries.push({ value, selection: sel });
+      h.index = h.entries.length - 1;
+      h.startedAt = now;
+    }
+    h.lastAt = mode === "coalesce" ? now : 0;
+    if (h.entries.length > HISTORY_LIMIT) {
+      h.entries.shift();
+      h.index--;
+    }
+  }, []);
+
   /* -------------------------------- 文本变化 ------------------------------- */
 
   const applyText = useCallback(
-    (next: string) => {
+    (next: string, opts: { selection?: Selection; history?: HistoryMode | "skip" } = {}) => {
+      const sel = opts.selection ?? { start: next.length, end: next.length };
+      setSelection((prev) => (sameSelection(prev, sel) ? prev : sel));
       const prev = textRef.current;
       if (prev === next) return;
       textRef.current = next;
       setText(next);
+      if (opts.history !== "skip") record(next, sel, opts.history ?? "record");
 
       if (!next.trim()) {
         // 清空 = 回到一片黑的初始状态；用户的细化先存起来，撤销后还能找回
@@ -231,7 +269,20 @@ export default function VideoGenStudio() {
       setEntities((es) => mapThroughEdit(es, prev, next));
       if (!composingRef.current) scheduleAnalysis();
     },
-    [cancelAnalysis, scheduleAnalysis],
+    [cancelAnalysis, record, scheduleAnalysis],
+  );
+
+  const stepHistory = useCallback(
+    (delta: -1 | 1) => {
+      const h = historyRef.current;
+      const index = h.index + delta;
+      if (index < 0 || index >= h.entries.length) return;
+      h.index = index;
+      h.lastAt = 0;
+      const entry = h.entries[index];
+      applyText(entry.value, { selection: entry.selection, history: "skip" });
+    },
+    [applyText],
   );
 
   const stopTyping = useCallback(() => {
@@ -241,15 +292,14 @@ export default function VideoGenStudio() {
     }
   }, []);
 
-  /** Tab：把示例逐字打出来，正好演示「边输入边识别」 */
+  /** Tab 或点击示例：把示例逐字打出来，正好演示「边输入边识别」 */
   const typeExample = useCallback(() => {
     stopTyping();
     const example = EXAMPLES[exampleRef.current];
     let i = 0;
     typingRef.current = window.setInterval(() => {
       i += 1;
-      applyText(example.slice(0, i));
-      setSelection({ start: i, end: i });
+      applyText(example.slice(0, i), { selection: { start: i, end: i }, history: "coalesce" });
       if (i >= example.length) stopTyping();
     }, 34);
   }, [applyText, stopTyping]);
@@ -274,19 +324,20 @@ export default function VideoGenStudio() {
       const end = target.start + target.text.length;
       const next = prev.slice(0, target.start) + replacement + prev.slice(end);
       const delta = replacement.length - target.text.length;
+      const shift = (pos: number) => (pos >= end ? pos + delta : pos);
+      const sel = { start: shift(selectionRef.current.start), end: shift(selectionRef.current.end) };
       textRef.current = next;
       setText(next);
+      setSelection(sel);
+      record(next, sel, "record");
       setEntities((es) =>
         mapThroughEdit(es, prev, next).map((e) =>
           e.id === id ? { ...e, text: replacement, start: target.start, ghost: undefined, params: { ...e.params, ...params }, touched: true } : e,
         ),
       );
-      const sel = selectionRef.current;
-      const shift = (pos: number) => (pos >= end ? pos + delta : pos);
-      setSelection({ start: shift(sel.start), end: shift(sel.end) });
       scheduleAnalysis();
     },
-    [scheduleAnalysis],
+    [record, scheduleAnalysis],
   );
 
   const removeEntity = useCallback(
@@ -314,12 +365,18 @@ export default function VideoGenStudio() {
       generatingRef.current = false;
       setGenerating(false);
       setPanel("generated");
-    }, 1400);
+    }, GENERATE_MS);
   }, [stopTyping]);
 
-  /* --------------------------------- 副作用 -------------------------------- */
+  /* --------------------------------- 派生 --------------------------------- */
 
   const started = text.trim().length > 0;
+  const visible = useMemo(() => entities.filter((e) => isIntact(e, text)), [entities, text]);
+  const openEntity = open ? visible.find((e) => e.id === open.id) : undefined;
+  const hoverEntity = hoverId && !open ? visible.find((e) => e.id === hoverId) : undefined;
+  const payload = useMemo(() => buildPayload(text, visible, video.settings, analysis), [text, visible, video.settings, analysis]);
+
+  /* --------------------------------- 副作用 -------------------------------- */
 
   useEffect(() => {
     if (started) return;
@@ -328,7 +385,12 @@ export default function VideoGenStudio() {
   }, [started]);
 
   useEffect(() => {
+    if (open && !openEntity) setOpen(null);
+  }, [open, openEntity]);
+
+  useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.isComposing) return;
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         generate();
@@ -338,8 +400,8 @@ export default function VideoGenStudio() {
         else closePopover(true);
       } else if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey && !open && !panel) {
         // 在黑暗里随便敲个字就能开始：焦点不在任何输入框时，先把焦点交给提示词
-        const active = document.activeElement;
-        const typing = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active as HTMLElement | null)?.isContentEditable;
+        const active = document.activeElement as HTMLElement | null;
+        const typing = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active?.isContentEditable;
         if (!typing) fieldRef.current?.focus();
       }
     };
@@ -356,38 +418,23 @@ export default function VideoGenStudio() {
     [],
   );
 
-  /* --------------------------------- 派生 --------------------------------- */
-
-  const visible = useMemo(() => entities.filter((e) => isIntact(e, text)), [entities, text]);
-  const openEntity = open ? visible.find((e) => e.id === open.id) : undefined;
-
-  useEffect(() => {
-    if (open && !openEntity) setOpen(null);
-  }, [open, openEntity]);
-
-  const glowColors = useMemo(() => {
-    const hexes = [...new Set(visible.filter((e) => e.category === "color" && typeof e.params.hex === "string").map((e) => e.params.hex as string))];
-    return hexes.length > 0 ? [...hexes, ...DEFAULT_GLOW].slice(0, 3) : DEFAULT_GLOW;
-  }, [visible]);
-
-  const payload = useMemo(() => buildPayload(text, visible, video.settings, analysis), [text, visible, video.settings, analysis]);
-
-  const engineLabel =
-    analysis.engine === "jev"
-      ? `Jev${analysis.model ? ` · ${analysis.model}` : ""} · ${analysis.latencyMs}ms`
-      : analysis.engine === "local"
-        ? `本地词典${analysis.fallbackReason ? ` · ${analysis.fallbackReason}` : ""}`
-        : "";
-
   /* --------------------------------- 事件 --------------------------------- */
 
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Tab" && !e.shiftKey && !textRef.current) {
       e.preventDefault();
       typeExample();
     } else if (e.key === "Escape" && open) {
       e.preventDefault();
       setOpen(null);
+    } else if (e.key === "Enter" && e.altKey) {
+      // 键盘用户的入口：Alt + Enter 打开光标所在的词
+      const at = selectionRef.current.start;
+      const hit = visible.find((x) => at >= x.start && at <= x.start + x.text.length);
+      if (hit) {
+        e.preventDefault();
+        setOpen({ id: hit.id, fragment: 0 });
+      }
     }
   };
 
@@ -421,31 +468,40 @@ export default function VideoGenStudio() {
     updateEntity(open.id, (e) => ({ ...e, references, touched: true }));
   };
 
-  const footerHint = !started ? (
-    <>
-      在黑暗里写下你想看到的画面
-      <span className={styles.desktopOnly}>
-        {" "}
-        · <span className={styles.kbd}>Tab</span> 填入示例
+  let footer;
+  if (!started) {
+    footer = (
+      <>
+        在黑暗里写下你想看到的画面
+        <span className={styles.hoverOnly}>
+          {" "}
+          · <span className={styles.kbd}>Tab</span> 填入示例
+        </span>
+      </>
+    );
+  } else if (generating) {
+    footer = (
+      <span className={styles.busy}>
+        <span className={styles.busyBar} />
+        正在生成…
       </span>
-    </>
-  ) : (
-    <>
-      点击带下划线的词进行细化
-      <span className={styles.desktopOnly}>
-        {" "}
-        · <span className={styles.kbd}>{shortcut}</span> 生成
-      </span>
-    </>
-  );
+    );
+  } else {
+    footer = (
+      <>
+        <span className={styles.hoverOnly}>
+          悬停查看识别结果，点击细化 · <span className={styles.kbd}>{shortcut}</span> 生成
+        </span>
+        <button type="button" className={`${styles.touchOnly} ${styles.footerTap}`} onClick={generate}>
+          点按带下划线的词细化 · 轻点这里生成
+        </button>
+      </>
+    );
+  }
 
   return (
     <div className={styles.root}>
-      <div className={styles.glowLayer} style={{ opacity: started ? 1 : 0 }} aria-hidden="true">
-        {glowColors.map((color, i) => (
-          <span key={i} className={styles.glow} style={{ backgroundColor: color }} />
-        ))}
-      </div>
+      <div className={styles.ambient} data-on={started} aria-hidden="true" />
       <div className={styles.grain} aria-hidden="true" />
 
       <AnimatePresence>
@@ -481,22 +537,20 @@ export default function VideoGenStudio() {
               value={text}
               entities={visible}
               selection={selection}
-              focused={focused}
-              composing={composing}
               activeId={open?.id ?? null}
               hoverId={hoverId}
               analyzing={analysis.status === "pending"}
-              onChange={applyText}
-              onSelectionChange={setSelection}
-              onFocusChange={setFocused}
-              onCompositionChange={(value) => {
-                composingRef.current = value;
-                setComposing(value);
-                if (!value) scheduleAnalysis();
+              onChange={(value, sel, mode) => applyText(value, { selection: sel, history: mode })}
+              onSelectionChange={(sel) => setSelection((prev) => (sameSelection(prev, sel) ? prev : sel))}
+              onCompositionChange={(composing) => {
+                composingRef.current = composing;
+                if (!composing) scheduleAnalysis();
               }}
               onHover={setHoverId}
               onEntityClick={(id, fragment) => setOpen(id ? { id, fragment } : null)}
               onKeyDown={onKeyDown}
+              onUndo={() => stepHistory(-1)}
+              onRedo={() => stepHistory(1)}
               onUserInput={stopTyping}
             />
             <AnimatePresence>
@@ -530,32 +584,17 @@ export default function VideoGenStudio() {
             {started && (
               <motion.div
                 key="gui"
-                className={styles.gui}
                 initial={{ opacity: 0, y: 14 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 14 }}
                 transition={{ duration: 0.45, ease: [0.2, 0.7, 0.2, 1] }}
               >
-                <ElementTray
-                  entities={visible}
-                  activeId={open?.id ?? null}
-                  hoverId={hoverId}
-                  analyzing={analysis.status === "pending"}
-                  engine={analysis.engine}
-                  engineLabel={engineLabel}
-                  onOpen={(id) => setOpen({ id, fragment: 0 })}
-                  onHover={setHoverId}
-                />
                 <SettingsBar
                   settings={video.settings}
                   meta={video.meta}
-                  canGenerate={started}
-                  generating={generating}
-                  shortcut={shortcut}
                   onChange={(key, value) =>
                     setVideo((v) => ({ settings: { ...v.settings, [key]: value }, meta: { ...v.meta, [key]: { by: "user" } } }))
                   }
-                  onGenerate={generate}
                 />
               </motion.div>
             )}
@@ -564,11 +603,21 @@ export default function VideoGenStudio() {
       </main>
 
       <div id="video-gen-hint" className={styles.footer}>
-        {footerHint}
+        {footer}
       </div>
       <div className={styles.srOnly} aria-live="polite">
         {analysis.status === "done" ? `识别到 ${visible.length} 个元素` : ""}
       </div>
+
+      <AnimatePresence>
+        {hoverEntity && (
+          <EntityHint
+            key={hoverEntity.id}
+            entity={hoverEntity}
+            getAnchor={() => fieldRef.current?.getEntityRect(hoverEntity.id, 0) ?? null}
+          />
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {openEntity && open && (

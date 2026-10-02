@@ -13,8 +13,6 @@ export interface CategoryInfo {
   key: Category;
   label: string;
   en: string;
-  /** 下划线 / 标记点的颜色；color 类用识别出的颜色本身 */
-  tint: string;
   hint: string;
   subtypes?: SubtypeInfo[];
 }
@@ -24,7 +22,6 @@ export const CATEGORIES: Record<Category, CategoryInfo> = {
     key: "character",
     label: "角色",
     en: "Subject",
-    tint: "#FF9EB5",
     hint: "a person, animal, robot or creature that appears in the video",
     subtypes: [
       { key: "human", label: "人物", hint: "a human being" },
@@ -37,7 +34,6 @@ export const CATEGORIES: Record<Category, CategoryInfo> = {
     key: "scene",
     label: "场景",
     en: "Scene",
-    tint: "#74E0B0",
     hint: "a place or setting where the video takes place",
     subtypes: [
       { key: "urban", label: "城市街景", hint: "a city, street or other urban outdoor place" },
@@ -50,7 +46,6 @@ export const CATEGORIES: Record<Category, CategoryInfo> = {
     key: "object",
     label: "物件",
     en: "Object",
-    tint: "#D3D8E2",
     hint: "a physical object: a prop, vehicle, plant or piece of clothing",
     subtypes: [
       { key: "clothing", label: "服饰", hint: "clothing or a wearable accessory" },
@@ -63,28 +58,24 @@ export const CATEGORIES: Record<Category, CategoryInfo> = {
     key: "action",
     label: "动作",
     en: "Action",
-    tint: "#C6F06E",
     hint: "an action, motion or event performed by something in the video",
   },
   atmosphere: {
     key: "atmosphere",
     label: "时间天气",
     en: "Time & Weather",
-    tint: "#8CC8FF",
     hint: "time of day, season or weather",
   },
   lighting: {
     key: "lighting",
     label: "光线",
     en: "Lighting",
-    tint: "#FFD27A",
     hint: "a lighting condition or light source",
   },
   camera: {
     key: "camera",
     label: "镜头",
     en: "Camera",
-    tint: "#FF8F6B",
     hint: "camera shot size, angle, movement, lens or playback speed",
     subtypes: [
       { key: "shot", label: "景别机位", hint: "shot size or camera angle, e.g. close-up, wide shot, aerial view" },
@@ -97,14 +88,12 @@ export const CATEGORIES: Record<Category, CategoryInfo> = {
     key: "style",
     label: "风格",
     en: "Style",
-    tint: "#B9A3FF",
     hint: "a visual or artistic style, film genre or director reference",
   },
   color: {
     key: "color",
     label: "颜色",
     en: "Color",
-    tint: "#E5E7EB",
     hint: "a color",
   },
 };

@@ -1,7 +1,7 @@
 "use client";
 
 // 常驻在提示词下方的视频参数。被提示词自动调整过的项会带 ✦ 标记，
-// 用户手动改过之后，AI 就不再覆盖它。
+// 用户手动改过之后，AI 就不再覆盖它。生成没有按钮，由 ⌘/Ctrl + Enter 触发（见底部提示）。
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -13,12 +13,7 @@ export type SettingMeta = Partial<Record<SettingKey, { by: "ai" | "user"; reason
 interface Props {
   settings: VideoSettings;
   meta: SettingMeta;
-  canGenerate: boolean;
-  generating: boolean;
-  /** 「⌘↵」或「Ctrl↵」 */
-  shortcut: string;
   onChange: <K extends SettingKey>(key: K, value: VideoSettings[K]) => void;
-  onGenerate: () => void;
 }
 
 const ASPECTS: VideoSettings["aspect"][] = ["16:9", "9:16", "1:1", "4:3", "21:9"];
@@ -50,7 +45,7 @@ export function RatioIcon({ ratio }: { ratio: string }) {
   );
 }
 
-export default function SettingsBar({ settings, meta, canGenerate, generating, shortcut, onChange, onGenerate }: Props) {
+export default function SettingsBar({ settings, meta, onChange }: Props) {
   const [open, setOpen] = useState<SettingKey | null>(null);
   const [side, setSide] = useState<"top" | "bottom">("bottom");
   const barRef = useRef<HTMLDivElement>(null);
@@ -210,14 +205,6 @@ export default function SettingsBar({ settings, meta, canGenerate, generating, s
           </div>
         </div>,
       )}
-      <span className={styles.spacer} />
-      <button type="button" className={styles.generate} disabled={!canGenerate || generating} onClick={onGenerate}>
-        {generating && <span className={styles.generateProgress} />}
-        <span className={styles.generateLabel}>
-          {generating ? "生成中…" : "生成"}
-          {!generating && <span className={styles.kbd}>{shortcut}</span>}
-        </span>
-      </button>
     </div>
   );
 }
