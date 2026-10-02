@@ -48,6 +48,11 @@ components/3d/
 data/
 ├── content.ts          # 结构化作品集数据（项目信息、个人资料等）
 └── portfolio_content.md # 原始内容文档
+
+app/lab/video-gen/      # Lab：视频生成入口交互 mockup
+app/api/video-gen/      # analyze / describe 两个 API route（Jev 或本地词典）
+components/video-gen/   # mockup 的 UI，样式用 CSS Module（video-gen.module.css），不依赖全局 Tailwind
+lib/video-gen/          # 词典、分类体系、实体位置映射、Jev 适配层（jev.ts 只能在服务端引用）
 ```
 
 ### 重要设计决策
